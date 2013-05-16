@@ -1,8 +1,10 @@
 PubNub client for Unity3D
 =================
 
-This is still pretty rough, and I'm not happy with the interface to it yet.
-But it's fairly easy to use, and doesn't involve System.Threading;
+This is still pretty rough, but it's fairly easy to use.
+
+Note though, that for some reason it doesn't work correctly in the editor.
+It does work in builds, but if you can fix it so it works in the editor I would be grateful.
 
 Attach Pubnub.cs to an empty game object to setup the PubNub client in the inspector.
 The object will persist across scenes, so you only need one.
@@ -17,12 +19,10 @@ C# example publish:
 
 
 C# example subscribe:
-	
-	AsyncResponse callback = delegate(Hashtable response) {
-		Debug.Log( pubnub.jsonEncode( response ) );
-	};
 
-	pubnub.subscribe("channel-name",callback);
+	pubnub.subscribe("channel-name",(Hashtable response)=>{
+		Debug.Log( pubnub.jsonEncode( response ) );
+	});
 
 
 If you place the source files into /Standard Assets/ or another [special directory](http://docs.unity3d.com/Documentation/ScriptReference/index.Script_compilation_28Advanced29.html), you can also use it from Unity JS:
@@ -32,4 +32,4 @@ If you place the source files into /Standard Assets/ or another [special directo
 
 I got the json.cs file from this repo: https://github.com/imersia/pubnub-unity3d
 
-This lib still needs improvement, if you make any please let me know :)
+This lib obviously still needs improvement, so if you make any please let me know :)

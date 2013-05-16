@@ -1,10 +1,18 @@
-/*PubNub client by Angelo Yazar, based PubNub's lua client: https://github.com/pubnub/pubnub-api/tree/master/lua-corona*/
-/*Attach this script to an empty game object to setup pubnub, it will persist across scenes.*/
+/*
+PubNub client by Angelo Yazar, based PubNub's lua client: https://github.com/pubnub/pubnub-api/tree/master/lua-corona
+Attach this script to an empty game object to setup pubnub, it will persist across scenes.
+
+>IMPORTANT< 
+For some reason, subscribing to more than one channel locks up pubnub in the editor, but works fine in builds.
+If you can figure out why, please let me know!
+*/
+
 using UnityEngine;
 using System;
 using System.Net;
 using System.Text;
 using System.Collections;
+using System.Collections.Generic;
 using System.Security.Cryptography;
 using JSONEncoderDecoder;
 
@@ -23,8 +31,12 @@ public class Pubnub : MonoBehaviour {
 	private HMACSHA256 sha256;
 	private string uuid = Guid.NewGuid().ToString();
 	
-	private Hashtable subscriptions;
-	private ArrayList pendingRoutines = new ArrayList();
+	public Hashtable subscriptions;
+	private List<IEnumerator> pendingRoutines = new List<IEnumerator>();
+	
+	private void QueueCoroutine( IEnumerator co ) {
+		pendingRoutines.Add( co );
+	}
 	
 	void debug(string message) {
 		if(debugging) {
@@ -37,6 +49,7 @@ public class Pubnub : MonoBehaviour {
 	}
 	
 	public void init() {
+		System.Net.ServicePointManager.DefaultConnectionLimit = 1000;
 		secure = secret_key.Length > 0;
 		subscriptions = new Hashtable();
 		origin = (ssl?"https://":"http://") + origin;
@@ -54,24 +67,21 @@ public class Pubnub : MonoBehaviour {
 		debug( url );
 		client.Headers.Add("V","1.0");
 		client.Headers.Add("User-Agent","Unity3D");
-		client.DownloadStringCompleted += new DownloadStringCompletedEventHandler( Pubnub.onResponse );
-		client.DownloadStringAsync(new Uri( url ), callback);
-    }
-	
-	static void onResponse( object sender, DownloadStringCompletedEventArgs e ) {
-		if( e.UserState != null ) {
-			Hashtable response = new Hashtable();
-			if(e.Cancelled != false) {
-				response.Add("error", true);
+		client.DownloadStringCompleted += (s,e) => {
+			if( callback != null ) {
+				Hashtable response = new Hashtable();
+				if(e.Cancelled != false || e.Error != null) {
+					response.Add("error", true);
+				}
+				else {
+					response.Add("message", (ArrayList)JSON.JsonDecode((string)e.Result));
+				}
+				callback( response );
 			}
-			else if(e.Error != null) {
-				response.Add("error", e.Error);
-			}
-			else {
-				response.Add("message", (ArrayList)JSON.JsonDecode((string)e.Result));	
-			}
-			((AsyncResponse)e.UserState)( response );
-		}
+			client.Dispose();
+		};
+			
+		client.DownloadStringAsync(new Uri( url ));
 	}
 	
 	public void publish(string channel, object messageObject, AsyncResponse callback = null) {
@@ -88,7 +98,7 @@ public class Pubnub : MonoBehaviour {
 		_request(request, callback);
 	}
 	
-	public void subscribe(string channel, AsyncResponse callback, AsyncResponse onError = null, AsyncResponse onConnected = null) {
+	public void subscribe(string channel, AsyncResponse callback, AsyncResponse onConnected = null, AsyncResponse onError = null) {
 		if( !subscriptions.ContainsKey(channel) ) {
 			subscriptions.Add(channel, new Hashtable());
 		}
@@ -107,15 +117,13 @@ public class Pubnub : MonoBehaviour {
 		subscription.Remove("first");
 		
 		string[] request = {"subscribe",subscribe_key,encode(channel),"0",(string)subscription["timetoken"]};
-		StartCoroutine(substabizel(subscription, request, "uuid="+uuid));
+		StartCoroutine( substabizel(channel, request, "uuid="+uuid) );
 	}
 	
-	private void QueueCoroutine( IEnumerator co ) {
-		pendingRoutines.Add( co );
-	}
-	
-	private IEnumerator substabizel(Hashtable subscription,string[] request, string query, YieldInstruction delay=null) {
+	private IEnumerator substabizel(string channel,string[] request, string query, YieldInstruction delay = null) {
 		yield return delay;
+		Hashtable subscription = (Hashtable)subscriptions[channel];
+		
 		if(!subscription.ContainsKey("connected")) { return false; }
 		
 		AsyncResponse onComplete = delegate(Hashtable response) {
@@ -132,10 +140,10 @@ public class Pubnub : MonoBehaviour {
 						if(subscription["onError"] != null) {
 							((AsyncResponse)subscription["onError"])(timeResponse);
 						}
-						QueueCoroutine( substabizel(subscription, request, query, new WaitForSeconds(1f)) );
+						QueueCoroutine( substabizel(channel, request, query, new WaitForSeconds(1.0f)) );
 					}
 					else {
-						QueueCoroutine( substabizel(subscription, request, query, new WaitForSeconds(0.1f)) );
+						QueueCoroutine( substabizel(channel, request, query, new WaitForSeconds(0.1f)) );
 					}
 				};
 				time(timeCallback);
@@ -147,8 +155,7 @@ public class Pubnub : MonoBehaviour {
 				foreach(object message in messages) {
 					((AsyncResponse)subscription["callback"])((Hashtable)message);
 				}
-				
-				QueueCoroutine( substabizel(subscription, request, query) );
+				QueueCoroutine( substabizel(channel, request, query, new WaitForSeconds(0.033f)) );
 			}
 		};
 		request[4] = (string)subscription["timetoken"];
@@ -162,9 +169,9 @@ public class Pubnub : MonoBehaviour {
 		subscription.Remove("first");
 	}
 	
-	public void presence(string channel, AsyncResponse callback, AsyncResponse onError = null, AsyncResponse onConnected = null) {
+	public void presence(string channel, AsyncResponse callback, AsyncResponse onConnected = null, AsyncResponse onError = null) {
 		channel += "-pnpres";
-		subscribe(channel,callback,onError,onConnected);
+		subscribe(channel,callback,onConnected,onError);
 	}
 	
 	public void here_now(string channel, AsyncResponse callback) {
@@ -207,7 +214,7 @@ public class Pubnub : MonoBehaviour {
 	void Update() {
 		if( pendingRoutines.Count > 0 ) {
 			foreach( IEnumerator co in pendingRoutines ) {
-				StartCoroutine( (IEnumerator)co );
+				StartCoroutine( co );
 			}
 			pendingRoutines.Clear();
 		}
@@ -221,14 +228,14 @@ public static class pubnub {
 	public static void publish(string channel, object messageObject, AsyncResponse callback = null) {
 		instance.publish(channel,messageObject,callback);
 	}
-	public static void subscribe(string channel, AsyncResponse callback, AsyncResponse onError = null, AsyncResponse onConnected = null) {
-		instance.subscribe(channel,callback,onError,onConnected);
+	public static void subscribe(string channel, AsyncResponse callback, AsyncResponse onConnected = null, AsyncResponse onError = null) {
+		instance.subscribe(channel,callback,onConnected,onError);
 	}
 	public static void unsubscribe(string channel) {
 		instance.unsubscribe(channel);
 	}
-	public static void presence(string channel, AsyncResponse callback, AsyncResponse onError = null, AsyncResponse onConnected = null) {
-		instance.presence(channel,callback,onError,onConnected);
+	public static void presence(string channel, AsyncResponse callback, AsyncResponse onConnected = null, AsyncResponse onError = null) {
+		instance.presence(channel,callback,onConnected,onError);
 	}
 	public static void here_now(string channel, AsyncResponse callback) {
 		instance.here_now(channel,callback);
@@ -244,5 +251,8 @@ public static class pubnub {
 	}
 	public static object jsonDecode( string data ) {
 		return JSON.JsonDecode( data );
+	}
+	public static string uuid() {
+		return Guid.NewGuid().ToString();
 	}
 }
